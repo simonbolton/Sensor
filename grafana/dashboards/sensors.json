@@ -1,0 +1,146 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1,
+          "unit": "celsius"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"sensors\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"environment\")\n  |> filter(fn: (r) => r._field == \"temperature_c\")\n  |> filter(fn: (r) => if \"${name}\" == \"All\" then true else r.name == \"${name}\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"mean\")",
+          "refId": "A"
+        }
+      ],
+      "title": "Temperature",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "unit": "humidity"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"sensors\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"environment\")\n  |> filter(fn: (r) => r._field == \"humidity_pct\")\n  |> filter(fn: (r) => if \"${name}\" == \"All\" then true else r.name == \"${name}\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"mean\")",
+          "refId": "A"
+        }
+      ],
+      "title": "Humidity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "temperature_c" },
+            "properties": [{ "id": "unit", "value": "celsius" }, { "id": "decimals", "value": 1 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "humidity_pct" },
+            "properties": [{ "id": "unit", "value": "humidity" }, { "id": "decimals", "value": 0 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "battery_pct" },
+            "properties": [{ "id": "unit", "value": "percent" }, { "id": "decimals", "value": 0 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "dewpoint_c" },
+            "properties": [{ "id": "unit", "value": "celsius" }, { "id": "decimals", "value": 1 }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "id": 3,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "influxdb" },
+          "query": "from(bucket: \"sensors\")\n  |> range(start: -6h)\n  |> filter(fn: (r) => r._measurement == \"environment\")\n  |> filter(fn: (r) => r._field == \"temperature_c\" or r._field == \"humidity_pct\" or r._field == \"battery_pct\" or r._field == \"dewpoint_c\")\n  |> filter(fn: (r) => if \"${name}\" == \"All\" then true else r.name == \"${name}\")\n  |> last()\n  |> pivot(rowKey: [\"_time\", \"name\", \"mac\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> keep(columns: [\"name\", \"mac\", \"temperature_c\", \"humidity_pct\", \"dewpoint_c\", \"battery_pct\", \"_time\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Latest readings",
+      "type": "table"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["switchbot", "sensors"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "All", "value": "All" },
+        "datasource": { "type": "influxdb", "uid": "influxdb" },
+        "definition": "import \"influxdata/influxdb/schema\"\n\nschema.tagValues(bucket: \"sensors\", tag: \"name\")",
+        "includeAll": true,
+        "allValue": "All",
+        "label": "Sensor",
+        "multi": false,
+        "name": "name",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\n\nschema.tagValues(bucket: \"sensors\", tag: \"name\")",
+        "refresh": 2,
+        "regex": "",
+        "hide": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SwitchBot Environment",
+  "uid": "switchbot-environment",
+  "version": 1
+}

@@ -1,0 +1,7 @@
+# Copy to sensors.yaml and set each meter's BLE MAC from the SwitchBot app:
+# Settings → Device Info → BLE MAC
+sensors:
+  - name: outdoor
+    mac: "AA:BB:CC:DD:EE:FF"
+  # - name: garage
+  #   mac: "11:22:33:44:55:66"

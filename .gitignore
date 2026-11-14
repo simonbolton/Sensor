@@ -1,0 +1,12 @@
+.env
+collector/sensors.yaml
+mosquitto/passwd
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+collector/.venv/
+
+venv/
+*.egg-info/
+.DS_Store
