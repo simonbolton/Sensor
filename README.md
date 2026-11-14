@@ -54,14 +54,14 @@ bluetoothctl show
 On every push and pull request to `main`, GitHub Actions builds the `collector` Docker image. Pushes to `main` also publish the image to GitHub Container Registry:
 
 ```text
-ghcr.io/<owner>/sensor/collector:latest
-ghcr.io/<owner>/sensor/collector:<git-sha>
+ghcr.io/simonbolton/sensor/collector:latest
+ghcr.io/simonbolton/sensor/collector:<git-sha>
 ```
 
-Pull (after making the package visible to your account, if private):
+Pull (package inherits repo visibility; link the package to the repo in GitHub Packages if needed):
 
 ```bash
-docker pull ghcr.io/<owner>/sensor/collector:latest
+docker pull ghcr.io/simonbolton/sensor/collector:latest
 ```
 
 Compose still builds locally by default (`build:` in `docker-compose.yml`). You can point `collector` at the GHCR image instead if you prefer.
