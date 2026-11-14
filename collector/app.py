@@ -288,7 +288,6 @@ async def collector_loop(
 
 async def main() -> int:
     configure_logging()
-    sensors = load_sensors()
     scan_interval = int(os.getenv("SCAN_INTERVAL_SECONDS", "900"))
     scan_timeout = float(os.getenv("SCAN_TIMEOUT_SECONDS", "60"))
     retention_days = int(os.getenv("RETENTION_DAYS", "730"))
@@ -297,18 +296,37 @@ async def main() -> int:
     web_port = int(os.getenv("WEB_PORT", "8080"))
     enable_mqtt = os.getenv("ENABLE_MQTT", "true").lower() in {"1", "true", "yes"}
 
+    try:
+        sensors = load_sensors()
+    except Exception:
+        LOG.exception(
+            "sensors_config_invalid hint='Use SENSORS=name=AA:BB:CC:DD:EE:FF "
+            "(comma-separated for more)'"
+        )
+        raise
+
     db = SensorDatabase(db_path, retention_days=retention_days)
     mqtt: MqttPublisher | None = None
     if enable_mqtt:
         mqtt_user = os.getenv("MQTT_USERNAME", "").strip() or None
         mqtt_pass = os.getenv("MQTT_PASSWORD", "").strip() or None
-        mqtt = MqttPublisher(
-            host=os.getenv("MQTT_HOST", "127.0.0.1"),
-            port=int(os.getenv("MQTT_PORT", "1883")),
-            username=mqtt_user,
-            password=mqtt_pass,
-            topic_prefix=os.getenv("MQTT_TOPIC_PREFIX", "sensors/switchbot"),
-        )
+        try:
+            mqtt = MqttPublisher(
+                host=os.getenv("MQTT_HOST", "127.0.0.1"),
+                port=int(os.getenv("MQTT_PORT", "1883")),
+                username=mqtt_user,
+                password=mqtt_pass,
+                topic_prefix=os.getenv("MQTT_TOPIC_PREFIX", "sensors/switchbot"),
+                connect_retries=int(os.getenv("MQTT_CONNECT_RETRIES", "6")),
+                connect_retry_seconds=float(os.getenv("MQTT_CONNECT_RETRY_SECONDS", "2")),
+            )
+        except Exception:
+            LOG.exception(
+                "mqtt_unavailable continuing_without_mqtt "
+                "hint='Port 1883 may already be in use on the host; "
+                "set ENABLE_MQTT=false or MQTT_PORT to a free port'"
+            )
+            mqtt = None
 
     stop = asyncio.Event()
 
@@ -327,18 +345,37 @@ async def main() -> int:
     config = uvicorn.Config(app, host=web_host, port=web_port, log_level="info")
     server = uvicorn.Server(config)
 
-    LOG.info("web_started host=%s port=%s sqlite_path=%s", web_host, web_port, db_path)
+    LOG.info(
+        "web_starting host=%s port=%s sqlite_path=%s sensor_count=%s mqtt_enabled=%s",
+        web_host,
+        web_port,
+        db_path,
+        len(sensors),
+        mqtt is not None,
+    )
 
     collector_task = asyncio.create_task(
         collector_loop(sensors, mqtt, db, scan_interval, scan_timeout, stop)
     )
     server_task = asyncio.create_task(server.serve())
 
-    await stop.wait()
+    done, pending = await asyncio.wait(
+        {collector_task, server_task},
+        return_when=asyncio.FIRST_EXCEPTION,
+    )
+    stop.set()
     server.should_exit = True
+    for task in pending:
+        task.cancel()
     await asyncio.gather(collector_task, server_task, return_exceptions=True)
     if mqtt is not None:
         mqtt.close()
+
+    for task in done:
+        exc = task.exception()
+        if exc is not None:
+            LOG.exception("fatal_task_failed", exc_info=exc)
+            return 1
     return 0
 
 
