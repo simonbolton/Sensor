@@ -97,7 +97,79 @@ def configure_logging() -> None:
         level=level,
         format="%(asctime)s %(levelname)s event=%(message)s",
         stream=sys.stdout,
+        force=True,
     )
+
+
+def log_startup_diagnostics() -> None:
+    LOG.info("startup_begin pid=%s python=%s", os.getpid(), sys.version.replace("\n", " "))
+    interesting = [
+        "SENSORS",
+        "SENSORS_FILE",
+        "SQLITE_PATH",
+        "WEB_HOST",
+        "WEB_PORT",
+        "ENABLE_MQTT",
+        "MQTT_HOST",
+        "MQTT_PORT",
+        "MQTT_USERNAME",
+        "MQTT_TOPIC_PREFIX",
+        "SCAN_INTERVAL_SECONDS",
+        "SCAN_TIMEOUT_SECONDS",
+        "RETENTION_DAYS",
+        "LOG_LEVEL",
+        "FATAL_HOLD_SECONDS",
+    ]
+    for key in interesting:
+        raw = os.getenv(key)
+        if raw is None:
+            LOG.info("env_missing key=%s", key)
+            continue
+        if key == "MQTT_PASSWORD":
+            continue
+        LOG.info("env_set key=%s value=%r", key, raw)
+
+    password_set = bool(os.getenv("MQTT_PASSWORD", "").strip())
+    LOG.info("env_secret_present key=MQTT_PASSWORD present=%s", password_set)
+
+    dbus_path = Path("/var/run/dbus/system_bus_socket")
+    LOG.info(
+        "dbus_socket path=%s exists=%s is_socket=%s",
+        dbus_path,
+        dbus_path.exists(),
+        dbus_path.is_socket() if dbus_path.exists() else False,
+    )
+
+    data_dir = Path(os.getenv("SQLITE_PATH", "/data/sensors.db")).parent
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        probe = data_dir / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        LOG.info("data_dir_writable path=%s", data_dir)
+    except Exception as exc:  # noqa: BLE001
+        LOG.exception("data_dir_not_writable path=%s error=%s", data_dir, exc)
+
+
+async def probe_bluetooth() -> None:
+    LOG.info("ble_probe_start")
+    try:
+        devices = await BleakScanner.discover(timeout=3.0, return_adv=False)
+        LOG.info("ble_probe_ok device_count=%s", len(devices))
+        for device in devices[:10]:
+            LOG.info(
+                "ble_probe_seen address=%s name=%r",
+                getattr(device, "address", "?"),
+                getattr(device, "name", None),
+            )
+        if len(devices) > 10:
+            LOG.info("ble_probe_truncated remaining=%s", len(devices) - 10)
+    except Exception as exc:  # noqa: BLE001
+        LOG.exception(
+            "ble_probe_failed error=%s hint='Need privileged=true, host network, "
+            "and /var/run/dbus/system_bus_socket mounted'",
+            exc,
+        )
 
 
 class MqttPublisher:
@@ -288,6 +360,8 @@ async def collector_loop(
 
 async def main() -> int:
     configure_logging()
+    log_startup_diagnostics()
+
     scan_interval = int(os.getenv("SCAN_INTERVAL_SECONDS", "900"))
     scan_timeout = float(os.getenv("SCAN_TIMEOUT_SECONDS", "60"))
     retention_days = int(os.getenv("RETENTION_DAYS", "730"))
@@ -295,6 +369,18 @@ async def main() -> int:
     web_host = os.getenv("WEB_HOST", "0.0.0.0")
     web_port = int(os.getenv("WEB_PORT", "8080"))
     enable_mqtt = os.getenv("ENABLE_MQTT", "true").lower() in {"1", "true", "yes"}
+
+    LOG.info(
+        "config_parsed scan_interval=%s scan_timeout=%s retention_days=%s "
+        "web_host=%s web_port=%s enable_mqtt=%s db_path=%s",
+        scan_interval,
+        scan_timeout,
+        retention_days,
+        web_host,
+        web_port,
+        enable_mqtt,
+        db_path,
+    )
 
     try:
         sensors = load_sensors()
@@ -305,15 +391,34 @@ async def main() -> int:
         )
         raise
 
-    db = SensorDatabase(db_path, retention_days=retention_days)
+    for sensor in sensors.values():
+        LOG.info("sensor_configured name=%s mac=%s", sensor.name, sensor.mac)
+
+    await probe_bluetooth()
+
+    try:
+        db = SensorDatabase(db_path, retention_days=retention_days)
+        LOG.info("sqlite_ready path=%s", db_path)
+    except Exception:
+        LOG.exception("sqlite_init_failed path=%s", db_path)
+        raise
+
     mqtt: MqttPublisher | None = None
     if enable_mqtt:
         mqtt_user = os.getenv("MQTT_USERNAME", "").strip() or None
         mqtt_pass = os.getenv("MQTT_PASSWORD", "").strip() or None
+        mqtt_host = os.getenv("MQTT_HOST", "127.0.0.1")
+        mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
+        LOG.info(
+            "mqtt_connecting host=%s port=%s username_set=%s",
+            mqtt_host,
+            mqtt_port,
+            bool(mqtt_user),
+        )
         try:
             mqtt = MqttPublisher(
-                host=os.getenv("MQTT_HOST", "127.0.0.1"),
-                port=int(os.getenv("MQTT_PORT", "1883")),
+                host=mqtt_host,
+                port=mqtt_port,
                 username=mqtt_user,
                 password=mqtt_pass,
                 topic_prefix=os.getenv("MQTT_TOPIC_PREFIX", "sensors/switchbot"),
@@ -323,10 +428,12 @@ async def main() -> int:
         except Exception:
             LOG.exception(
                 "mqtt_unavailable continuing_without_mqtt "
-                "hint='Port 1883 may already be in use on the host; "
+                "hint='Port may already be in use on the host; "
                 "set ENABLE_MQTT=false or MQTT_PORT to a free port'"
             )
             mqtt = None
+    else:
+        LOG.info("mqtt_skipped enable_mqtt=false")
 
     stop = asyncio.Event()
 
@@ -355,9 +462,10 @@ async def main() -> int:
     )
 
     collector_task = asyncio.create_task(
-        collector_loop(sensors, mqtt, db, scan_interval, scan_timeout, stop)
+        collector_loop(sensors, mqtt, db, scan_interval, scan_timeout, stop),
+        name="collector",
     )
-    server_task = asyncio.create_task(server.serve())
+    server_task = asyncio.create_task(server.serve(), name="web")
 
     done, pending = await asyncio.wait(
         {collector_task, server_task},
@@ -372,12 +480,35 @@ async def main() -> int:
         mqtt.close()
 
     for task in done:
+        if task.cancelled():
+            LOG.error("fatal_task_cancelled name=%s", task.get_name())
+            return 1
         exc = task.exception()
         if exc is not None:
-            LOG.exception("fatal_task_failed", exc_info=exc)
+            LOG.error("fatal_task_failed name=%s error=%s", task.get_name(), exc)
+            LOG.exception("fatal_task_traceback", exc_info=exc)
             return 1
+        LOG.info("task_exited_cleanly name=%s", task.get_name())
     return 0
 
 
+def _hold_before_exit(exit_code: int) -> int:
+    hold = int(os.getenv("FATAL_HOLD_SECONDS", "30"))
+    if exit_code != 0 and hold > 0:
+        LOG.error(
+            "fatal_hold_seconds=%s exit_code=%s hint='Read the logs above before restart'",
+            hold,
+            exit_code,
+        )
+        time.sleep(hold)
+    return exit_code
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    configure_logging()
+    try:
+        code = asyncio.run(main())
+    except Exception:
+        LOG.exception("fatal_unhandled_exception")
+        raise SystemExit(_hold_before_exit(1)) from None
+    raise SystemExit(_hold_before_exit(code))
