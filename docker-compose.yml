@@ -24,8 +24,6 @@ services:
       MQTT_HOST: 127.0.0.1
       MQTT_PORT: 1883
     volumes:
-      - sensor_data:/data
+      # Bind mount — no named volume declaration needed (Dockge-friendly)
+      - ./data:/data
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
-
-volumes:
-  sensor_data:

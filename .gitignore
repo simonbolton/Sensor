@@ -1,6 +1,7 @@
 .env
 collector/sensors.yaml
 mosquitto/passwd
+data/
 __pycache__/
 *.py[cod]
 .pytest_cache/

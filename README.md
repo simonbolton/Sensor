@@ -34,11 +34,8 @@ services:
       WEB_PORT: "8080"
       LOG_LEVEL: INFO
     volumes:
-      - sensor_data:/data
+      - ./data:/data
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
-
-volumes:
-  sensor_data:
 ```
 
 Then open: `http://<host-ip>:8080`
