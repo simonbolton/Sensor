@@ -66,6 +66,37 @@ docker pull ghcr.io/simonbolton/sensor/collector:latest
 
 Compose still builds locally by default (`build:` in `docker-compose.yml`). You can point `collector` at the GHCR image instead if you prefer.
 
+## Dockage (env-only collector)
+
+Image: `ghcr.io/simonbolton/sensor/collector:latest`
+
+Set these **environment variables** in Dockage (no `sensors.yaml` mount required if `SENSORS` is set):
+
+| Variable | Example | Required |
+| --- | --- | --- |
+| `SENSORS` | `outdoor=AA:BB:CC:DD:EE:FF,garage=11:22:33:44:55:66` | Yes (or mount yaml) |
+| `MQTT_HOST` | `192.168.1.10` or `mosquitto` | Yes |
+| `MQTT_PORT` | `1883` | No (default `1883`) |
+| `MQTT_USERNAME` | `sensor` | Yes |
+| `MQTT_PASSWORD` | *(secret)* | Yes |
+| `MQTT_TOPIC_PREFIX` | `sensors/switchbot` | No |
+| `INFLUX_URL` | `http://192.168.1.10:8086` | Yes |
+| `INFLUX_ORG` | `home` | Yes |
+| `INFLUX_BUCKET` | `sensors` | Yes |
+| `INFLUX_TOKEN` | *(secret)* | Yes |
+| `SCAN_INTERVAL_SECONDS` | `900` | No |
+| `SCAN_TIMEOUT_SECONDS` | `60` | No |
+| `LOG_LEVEL` | `INFO` | No |
+
+`SENSORS` format: `name=MAC,name2=MAC2` (comma or semicolon separated). MACs from SwitchBot app → Device Info → BLE MAC.
+
+Also enable for BLE on the host:
+
+- Privileged mode **or** host networking
+- Device/socket access to Bluetooth (mount `/var/run/dbus/system_bus_socket`)
+
+Mosquitto, InfluxDB, and Grafana still need to run separately (compose stack or other Dockage apps). Point `MQTT_HOST` / `INFLUX_URL` at those services.
+
 ## Quick start
 
 ```bash

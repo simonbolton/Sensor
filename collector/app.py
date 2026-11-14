@@ -40,10 +40,37 @@ def env(name: str, default: str | None = None) -> str:
     return value
 
 
-def load_sensors(path: Path) -> dict[str, SensorConfig]:
+def parse_sensors_env(value: str) -> dict[str, SensorConfig]:
+    """
+    Parse Dockage-friendly sensor list.
+
+    Format: name=AA:BB:CC:DD:EE:FF,name2=11:22:33:44:55:66
+    Separators: comma or semicolon between sensors.
+    """
+    by_mac: dict[str, SensorConfig] = {}
+    chunks = [part.strip() for part in value.replace(";", ",").split(",") if part.strip()]
+    if not chunks:
+        raise RuntimeError("SENSORS is set but empty")
+
+    for chunk in chunks:
+        if "=" not in chunk:
+            raise RuntimeError(
+                f"Invalid SENSORS entry {chunk!r}. Expected name=AA:BB:CC:DD:EE:FF"
+            )
+        name, mac = chunk.split("=", 1)
+        name = name.strip()
+        mac = mac.strip().upper()
+        if not name or not mac:
+            raise RuntimeError(f"Invalid SENSORS entry {chunk!r}")
+        by_mac[mac] = SensorConfig(name=name, mac=mac)
+    return by_mac
+
+
+def load_sensors_file(path: Path) -> dict[str, SensorConfig]:
     if not path.is_file():
         raise RuntimeError(
-            f"Sensors file not found: {path}. Copy sensors.yaml.example to sensors.yaml."
+            f"Sensors file not found: {path}. "
+            "Set SENSORS env (name=MAC,...) or mount sensors.yaml."
         )
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     items = raw.get("sensors") or []
@@ -60,6 +87,14 @@ def load_sensors(path: Path) -> dict[str, SensorConfig]:
     return by_mac
 
 
+def load_sensors() -> dict[str, SensorConfig]:
+    sensors_env = os.getenv("SENSORS", "").strip()
+    if sensors_env:
+        return parse_sensors_env(sensors_env)
+    sensors_path = Path(os.getenv("SENSORS_FILE", "/config/sensors.yaml"))
+    return load_sensors_file(sensors_path)
+
+
 def configure_logging() -> None:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -71,15 +106,46 @@ def configure_logging() -> None:
 
 
 class MqttPublisher:
-    def __init__(self, host: str, port: int, username: str, password: str, topic_prefix: str):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        topic_prefix: str,
+        connect_retries: int = 12,
+        connect_retry_seconds: float = 5.0,
+    ):
         self._topic_prefix = topic_prefix.rstrip("/")
         self._client = mqtt_client.Client(
             mqtt_client.CallbackAPIVersion.VERSION2,
             client_id=f"ble-collector-{os.getpid()}",
         )
         self._client.username_pw_set(username, password)
-        self._client.connect(host, port, keepalive=60)
-        self._client.loop_start()
+        last_error: Exception | None = None
+        for attempt in range(1, connect_retries + 1):
+            try:
+                self._client.connect(host, port, keepalive=60)
+                self._client.loop_start()
+                LOG.info(
+                    "mqtt_connect_ok host=%s port=%s attempt=%s",
+                    host,
+                    port,
+                    attempt,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - retry then raise
+                last_error = exc
+                LOG.warning(
+                    "mqtt_connect_retry host=%s port=%s attempt=%s/%s error=%s",
+                    host,
+                    port,
+                    attempt,
+                    connect_retries,
+                    exc,
+                )
+                time.sleep(connect_retry_seconds)
+        raise RuntimeError(f"MQTT connect failed after {connect_retries} attempts: {last_error}")
 
     def publish_reading(self, sensor: SensorConfig, reading: SensorReading) -> None:
         topic = f"{self._topic_prefix}/{sensor.mac.lower().replace(':', '')}/telemetry"
@@ -216,8 +282,7 @@ async def run_cycle(
 
 async def main() -> int:
     configure_logging()
-    sensors_path = Path(env("SENSORS_FILE", "/config/sensors.yaml"))
-    sensors = load_sensors(sensors_path)
+    sensors = load_sensors()
     scan_interval = int(env("SCAN_INTERVAL_SECONDS", "900"))
     scan_timeout = float(env("SCAN_TIMEOUT_SECONDS", "60"))
 
