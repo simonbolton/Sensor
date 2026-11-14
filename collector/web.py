@@ -13,7 +13,7 @@ from database import SensorDatabase
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
-def create_app(db: SensorDatabase) -> FastAPI:
+def create_app(db: SensorDatabase, config_error: str | None = None) -> FastAPI:
     app = FastAPI(title="SwitchBot Sensors", docs_url=None, redoc_url=None)
 
     @app.get("/healthz")
@@ -52,6 +52,7 @@ def create_app(db: SensorDatabase) -> FastAPI:
                 "latest": latest,
                 "series": series,
                 "hours": hours,
+                "config_error": config_error,
             },
         )
 

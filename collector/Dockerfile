@@ -20,6 +20,7 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
 ENV PYTHONUNBUFFERED=1 \
+    APP_VERSION=2026-11-14-sensors-env \
     SQLITE_PATH=/data/sensors.db \
     WEB_HOST=0.0.0.0 \
     WEB_PORT=8080 \

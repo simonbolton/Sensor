@@ -109,7 +109,13 @@
       </div>
     </header>
 
-    {% if not latest %}
+    {% if config_error %}
+      <div class="empty">
+        <strong>Sensor config missing or invalid.</strong><br>
+        Set Dockge env <code>SENSORS=name=AA:BB:CC:DD:EE:FF</code>, then recreate the container.<br>
+        <span class="mac">{{ config_error }}</span>
+      </div>
+    {% elif not latest %}
       <div class="empty">No readings yet. Wait for the next BLE scan cycle.</div>
     {% else %}
       <section class="grid">

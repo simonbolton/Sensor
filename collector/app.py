@@ -85,9 +85,22 @@ def load_sensors_file(path: Path) -> dict[str, SensorConfig]:
 def load_sensors() -> dict[str, SensorConfig]:
     sensors_env = os.getenv("SENSORS", "").strip()
     if sensors_env:
+        LOG.info("sensors_source=env value=%r", sensors_env)
         return parse_sensors_env(sensors_env)
     sensors_path = Path(os.getenv("SENSORS_FILE", "/config/sensors.yaml"))
+    LOG.info("sensors_source=file path=%s", sensors_path)
     return load_sensors_file(sensors_path)
+
+
+def try_load_sensors() -> tuple[dict[str, SensorConfig], str | None]:
+    """Load sensors without crashing the process; return (sensors, error)."""
+    try:
+        return load_sensors(), None
+    except Exception as exc:  # noqa: BLE001
+        LOG.exception(
+            "sensors_config_invalid hint='Set Dockge env SENSORS=name=AA:BB:CC:DD:EE:FF'"
+        )
+        return {}, str(exc)
 
 
 def configure_logging() -> None:
@@ -343,10 +356,16 @@ async def collector_loop(
     )
     while not stop.is_set():
         cycle_started = time.monotonic()
-        try:
-            await run_cycle(sensors, mqtt, db, scan_timeout)
-        except Exception:
-            LOG.exception("cycle_failed")
+        if not sensors:
+            LOG.warning(
+                "collector_skipped_no_sensors hint='Set SENSORS=name=AA:BB:CC:DD:EE:FF "
+                "in Dockge and recreate the container'"
+            )
+        else:
+            try:
+                await run_cycle(sensors, mqtt, db, scan_timeout)
+            except Exception:
+                LOG.exception("cycle_failed")
 
         elapsed = time.monotonic() - cycle_started
         sleep_for = max(0.0, scan_interval - elapsed)
@@ -382,17 +401,12 @@ async def main() -> int:
         db_path,
     )
 
-    try:
-        sensors = load_sensors()
-    except Exception:
-        LOG.exception(
-            "sensors_config_invalid hint='Use SENSORS=name=AA:BB:CC:DD:EE:FF "
-            "(comma-separated for more)'"
-        )
-        raise
-
+    LOG.info("app_version=%s", os.getenv("APP_VERSION", "unknown"))
+    sensors, sensors_error = try_load_sensors()
     for sensor in sensors.values():
         LOG.info("sensor_configured name=%s mac=%s", sensor.name, sensor.mac)
+    if sensors_error:
+        LOG.error("sensors_error=%s", sensors_error)
 
     await probe_bluetooth()
 
@@ -448,7 +462,7 @@ async def main() -> int:
         except NotImplementedError:
             signal.signal(sig, lambda *_a: _request_stop())
 
-    app = create_app(db)
+    app = create_app(db, config_error=sensors_error)
     config = uvicorn.Config(app, host=web_host, port=web_port, log_level="info")
     server = uvicorn.Server(config)
 
