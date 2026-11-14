@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <title>Sensor readings</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #f3f1ec;
+      --ink: #1c1b19;
+      --muted: #5f5a52;
+      --panel: #fffdf8;
+      --line: #d8d2c6;
+      --accent: #0f6a5a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, #e7efe9 0, transparent 42%),
+        linear-gradient(180deg, #f7f4ee, var(--bg));
+      min-height: 100vh;
+    }
+    main {
+      width: min(1100px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2rem 0 3rem;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: end;
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      letter-spacing: -0.03em;
+    }
+    .sub { color: var(--muted); margin-top: 0.35rem; }
+    .ranges a {
+      color: var(--accent);
+      text-decoration: none;
+      margin-left: 0.75rem;
+      font-weight: 600;
+    }
+    .ranges a.active { text-decoration: underline; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .tile {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem 1.1rem;
+    }
+    .tile h2 {
+      margin: 0 0 0.35rem;
+      font-size: 1rem;
+    }
+    .tile .mac {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-bottom: 0.8rem;
+    }
+    .vals {
+      display: grid;
+      gap: 0.35rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .vals strong { font-size: 1.35rem; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    .panel h3 { margin: 0 0 0.75rem; font-size: 1rem; }
+    .empty {
+      padding: 2rem;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.5);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Sensor readings</h1>
+        <p class="sub">Local SQLite store · auto-refresh every 60s</p>
+      </div>
+      <div class="ranges">
+        <a class="{{ 'active' if hours == 24 else '' }}" href="/?hours=24">24h</a>
+        <a class="{{ 'active' if hours == 72 else '' }}" href="/?hours=72">3d</a>
+        <a class="{{ 'active' if hours == 168 else '' }}" href="/?hours=168">7d</a>
+      </div>
+    </header>
+
+    {% if not latest %}
+      <div class="empty">No readings yet. Wait for the next BLE scan cycle.</div>
+    {% else %}
+      <section class="grid">
+        {% for row in latest %}
+          <article class="tile">
+            <h2>{{ row.name }}</h2>
+            <div class="mac">{{ row.mac }}</div>
+            <div class="vals">
+              <div><strong>{{ '%.1f'|format(row.temperature_c) }}°C</strong></div>
+              <div>{{ '%.0f'|format(row.humidity_pct) }}% humidity</div>
+              {% if row.battery_pct is not none %}
+                <div>{{ row.battery_pct }}% battery</div>
+              {% endif %}
+              <div class="mac">{{ row.recorded_at }}</div>
+            </div>
+          </article>
+        {% endfor %}
+      </section>
+
+      {% for name, data in series.items() %}
+        <section class="panel">
+          <h3>{{ name }} · last {{ hours }}h</h3>
+          <canvas id="chart-{{ loop.index }}" height="110"></canvas>
+          <script>
+            (() => {
+              const labels = {{ data.labels | tojson }};
+              const temperature = {{ data.temperature | tojson }};
+              const humidity = {{ data.humidity | tojson }};
+              new Chart(document.getElementById("chart-{{ loop.index }}"), {
+                type: "line",
+                data: {
+                  labels,
+                  datasets: [
+                    {
+                      label: "Temp °C",
+                      data: temperature,
+                      borderColor: "#0f6a5a",
+                      backgroundColor: "rgba(15,106,90,0.12)",
+                      tension: 0.25,
+                      yAxisID: "y"
+                    },
+                    {
+                      label: "Humidity %",
+                      data: humidity,
+                      borderColor: "#8a5a2b",
+                      backgroundColor: "transparent",
+                      tension: 0.25,
+                      yAxisID: "y1"
+                    }
+                  ]
+                },
+                options: {
+                  responsive: true,
+                  interaction: { mode: "index", intersect: false },
+                  scales: {
+                    x: {
+                      ticks: {
+                        maxTicksLimit: 8,
+                        callback: (value, index) => {
+                          const raw = labels[index] || "";
+                          return raw.slice(11, 16) || raw.slice(5, 16);
+                        }
+                      }
+                    },
+                    y: { position: "left", title: { display: true, text: "°C" } },
+                    y1: {
+                      position: "right",
+                      min: 0,
+                      max: 100,
+                      grid: { drawOnChartArea: false },
+                      title: { display: true, text: "%" }
+                    }
+                  }
+                }
+              });
+            })();
+          </script>
+        </section>
+      {% endfor %}
+    {% endif %}
+  </main>
+</body>
+</html>

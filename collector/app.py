@@ -1,4 +1,4 @@
-"""BLE collector: SwitchBot meters → MQTT + InfluxDB."""
+"""All-in-one: BLE collector → SQLite + MQTT, with web UI."""
 
 from __future__ import annotations
 
@@ -14,17 +14,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import uvicorn
 import yaml
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
-from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.write_api import SYNCHRONOUS
 from paho.mqtt import client as mqtt_client
 
+from database import SensorDatabase
 from decode import SensorReading, decode_switchbot_advertisement
+from web import create_app
 
-LOG = logging.getLogger("ble_collector")
+LOG = logging.getLogger("sensor")
 
 
 @dataclass(frozen=True)
@@ -41,12 +42,6 @@ def env(name: str, default: str | None = None) -> str:
 
 
 def parse_sensors_env(value: str) -> dict[str, SensorConfig]:
-    """
-    Parse Dockage-friendly sensor list.
-
-    Format: name=AA:BB:CC:DD:EE:FF,name2=11:22:33:44:55:66
-    Separators: comma or semicolon between sensors.
-    """
     by_mac: dict[str, SensorConfig] = {}
     chunks = [part.strip() for part in value.replace(";", ",").split(",") if part.strip()]
     if not chunks:
@@ -110,8 +105,8 @@ class MqttPublisher:
         self,
         host: str,
         port: int,
-        username: str,
-        password: str,
+        username: str | None,
+        password: str | None,
         topic_prefix: str,
         connect_retries: int = 12,
         connect_retry_seconds: float = 5.0,
@@ -119,22 +114,18 @@ class MqttPublisher:
         self._topic_prefix = topic_prefix.rstrip("/")
         self._client = mqtt_client.Client(
             mqtt_client.CallbackAPIVersion.VERSION2,
-            client_id=f"ble-collector-{os.getpid()}",
+            client_id=f"sensor-collector-{os.getpid()}",
         )
-        self._client.username_pw_set(username, password)
+        if username:
+            self._client.username_pw_set(username, password or "")
         last_error: Exception | None = None
         for attempt in range(1, connect_retries + 1):
             try:
                 self._client.connect(host, port, keepalive=60)
                 self._client.loop_start()
-                LOG.info(
-                    "mqtt_connect_ok host=%s port=%s attempt=%s",
-                    host,
-                    port,
-                    attempt,
-                )
+                LOG.info("mqtt_connect_ok host=%s port=%s attempt=%s", host, port, attempt)
                 return
-            except Exception as exc:  # noqa: BLE001 - retry then raise
+            except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 LOG.warning(
                     "mqtt_connect_retry host=%s port=%s attempt=%s/%s error=%s",
@@ -168,41 +159,6 @@ class MqttPublisher:
     def close(self) -> None:
         self._client.loop_stop()
         self._client.disconnect()
-
-
-class InfluxWriter:
-    def __init__(self, url: str, token: str, org: str, bucket: str):
-        self._org = org
-        self._bucket = bucket
-        self._client = InfluxDBClient(url=url, token=token, org=org, timeout=10_000)
-        self._write_api = self._client.write_api(write_options=SYNCHRONOUS)
-
-    def write_reading(self, sensor: SensorConfig, reading: SensorReading) -> None:
-        point = (
-            Point("environment")
-            .tag("mac", sensor.mac)
-            .tag("name", sensor.name)
-            .field("temperature_c", float(reading.temperature_c))
-            .field("humidity_pct", float(reading.humidity_pct))
-            .time(datetime.now(timezone.utc), WritePrecision.NS)
-        )
-        if reading.battery_pct is not None:
-            point = point.field("battery_pct", int(reading.battery_pct))
-        if reading.dewpoint_c is not None:
-            point = point.field("dewpoint_c", float(reading.dewpoint_c))
-
-        self._write_api.write(bucket=self._bucket, org=self._org, record=point)
-        LOG.info(
-            "influx_write_ok name=%s mac=%s temperature_c=%s humidity_pct=%s",
-            sensor.name,
-            sensor.mac,
-            reading.temperature_c,
-            reading.humidity_pct,
-        )
-
-    def close(self) -> None:
-        self._write_api.close()
-        self._client.close()
 
 
 async def scan_once(
@@ -263,42 +219,96 @@ async def scan_once(
 
 async def run_cycle(
     sensors: dict[str, SensorConfig],
-    mqtt: MqttPublisher,
-    influx: InfluxWriter,
+    mqtt: MqttPublisher | None,
+    db: SensorDatabase,
     scan_timeout: float,
 ) -> None:
     readings = await scan_once(sensors, scan_timeout)
     for mac, reading in readings.items():
         sensor = sensors[mac]
         try:
-            mqtt.publish_reading(sensor, reading)
+            db.insert_reading(
+                name=sensor.name,
+                mac=sensor.mac,
+                temperature_c=reading.temperature_c,
+                humidity_pct=reading.humidity_pct,
+                battery_pct=reading.battery_pct,
+                dewpoint_c=reading.dewpoint_c,
+            )
+            LOG.info(
+                "sqlite_write_ok name=%s mac=%s temperature_c=%s humidity_pct=%s",
+                sensor.name,
+                sensor.mac,
+                reading.temperature_c,
+                reading.humidity_pct,
+            )
         except Exception:
-            LOG.exception("mqtt_publish_failed name=%s mac=%s", sensor.name, mac)
+            LOG.exception("sqlite_write_failed name=%s mac=%s", sensor.name, mac)
+
+        if mqtt is not None:
+            try:
+                mqtt.publish_reading(sensor, reading)
+            except Exception:
+                LOG.exception("mqtt_publish_failed name=%s mac=%s", sensor.name, mac)
+
+    deleted = db.purge_expired()
+    if deleted:
+        LOG.info("sqlite_purge_ok deleted=%s", deleted)
+
+
+async def collector_loop(
+    sensors: dict[str, SensorConfig],
+    mqtt: MqttPublisher | None,
+    db: SensorDatabase,
+    scan_interval: int,
+    scan_timeout: float,
+    stop: asyncio.Event,
+) -> None:
+    LOG.info(
+        "collector_started sensor_count=%s scan_interval_seconds=%s",
+        len(sensors),
+        scan_interval,
+    )
+    while not stop.is_set():
+        cycle_started = time.monotonic()
         try:
-            influx.write_reading(sensor, reading)
+            await run_cycle(sensors, mqtt, db, scan_timeout)
         except Exception:
-            LOG.exception("influx_write_failed name=%s mac=%s", sensor.name, mac)
+            LOG.exception("cycle_failed")
+
+        elapsed = time.monotonic() - cycle_started
+        sleep_for = max(0.0, scan_interval - elapsed)
+        LOG.info("cycle_complete elapsed_seconds=%.1f sleep_seconds=%.1f", elapsed, sleep_for)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=sleep_for)
+        except TimeoutError:
+            pass
+    LOG.info("collector_stopped")
 
 
 async def main() -> int:
     configure_logging()
     sensors = load_sensors()
-    scan_interval = int(env("SCAN_INTERVAL_SECONDS", "900"))
-    scan_timeout = float(env("SCAN_TIMEOUT_SECONDS", "60"))
+    scan_interval = int(os.getenv("SCAN_INTERVAL_SECONDS", "900"))
+    scan_timeout = float(os.getenv("SCAN_TIMEOUT_SECONDS", "60"))
+    retention_days = int(os.getenv("RETENTION_DAYS", "730"))
+    db_path = Path(os.getenv("SQLITE_PATH", "/data/sensors.db"))
+    web_host = os.getenv("WEB_HOST", "0.0.0.0")
+    web_port = int(os.getenv("WEB_PORT", "8080"))
+    enable_mqtt = os.getenv("ENABLE_MQTT", "true").lower() in {"1", "true", "yes"}
 
-    mqtt = MqttPublisher(
-        host=env("MQTT_HOST", "127.0.0.1"),
-        port=int(env("MQTT_PORT", "1883")),
-        username=env("MQTT_USERNAME"),
-        password=env("MQTT_PASSWORD"),
-        topic_prefix=env("MQTT_TOPIC_PREFIX", "sensors/switchbot"),
-    )
-    influx = InfluxWriter(
-        url=env("INFLUX_URL", "http://127.0.0.1:8086"),
-        token=env("INFLUX_TOKEN"),
-        org=env("INFLUX_ORG"),
-        bucket=env("INFLUX_BUCKET"),
-    )
+    db = SensorDatabase(db_path, retention_days=retention_days)
+    mqtt: MqttPublisher | None = None
+    if enable_mqtt:
+        mqtt_user = os.getenv("MQTT_USERNAME", "").strip() or None
+        mqtt_pass = os.getenv("MQTT_PASSWORD", "").strip() or None
+        mqtt = MqttPublisher(
+            host=os.getenv("MQTT_HOST", "127.0.0.1"),
+            port=int(os.getenv("MQTT_PORT", "1883")),
+            username=mqtt_user,
+            password=mqtt_pass,
+            topic_prefix=os.getenv("MQTT_TOPIC_PREFIX", "sensors/switchbot"),
+        )
 
     stop = asyncio.Event()
 
@@ -313,32 +323,22 @@ async def main() -> int:
         except NotImplementedError:
             signal.signal(sig, lambda *_a: _request_stop())
 
-    LOG.info(
-        "collector_started sensor_count=%s scan_interval_seconds=%s",
-        len(sensors),
-        scan_interval,
+    app = create_app(db)
+    config = uvicorn.Config(app, host=web_host, port=web_port, log_level="info")
+    server = uvicorn.Server(config)
+
+    LOG.info("web_started host=%s port=%s sqlite_path=%s", web_host, web_port, db_path)
+
+    collector_task = asyncio.create_task(
+        collector_loop(sensors, mqtt, db, scan_interval, scan_timeout, stop)
     )
+    server_task = asyncio.create_task(server.serve())
 
-    try:
-        while not stop.is_set():
-            cycle_started = time.monotonic()
-            try:
-                await run_cycle(sensors, mqtt, influx, scan_timeout)
-            except Exception:
-                LOG.exception("cycle_failed")
-
-            elapsed = time.monotonic() - cycle_started
-            sleep_for = max(0.0, scan_interval - elapsed)
-            LOG.info("cycle_complete elapsed_seconds=%.1f sleep_seconds=%.1f", elapsed, sleep_for)
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=sleep_for)
-            except TimeoutError:
-                pass
-    finally:
+    await stop.wait()
+    server.should_exit = True
+    await asyncio.gather(collector_task, server_task, return_exceptions=True)
+    if mqtt is not None:
         mqtt.close()
-        influx.close()
-        LOG.info("collector_stopped")
-
     return 0
 
 

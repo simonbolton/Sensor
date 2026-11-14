@@ -1,101 +1,31 @@
+# Single-service stack for Dockge / Docker Compose.
+# BLE collector + Mosquitto + SQLite + web UI in one container.
+
 services:
-  mosquitto:
-    image: eclipse-mosquitto:2
-    restart: unless-stopped
-    ports:
-      - "${MQTT_PORT:-1883}:1883"
-    environment:
-      MQTT_USERNAME: ${MQTT_USERNAME}
-      MQTT_PASSWORD: ${MQTT_PASSWORD}
-    volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/docker-entrypoint.sh:/docker-entrypoint-auth.sh:ro
-      - mosquitto_data:/mosquitto/data
-      - mosquitto_log:/mosquitto/log
-    entrypoint: ["/bin/sh", "/docker-entrypoint-auth.sh"]
-    healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -p 1883 -u \"$$MQTT_USERNAME\" -P \"$$MQTT_PASSWORD\" -t '$$SYS/#' -C 1 -W 3 >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 15s
-
-  influxdb:
-    image: influxdb:2.7
-    restart: unless-stopped
-    ports:
-      - "${INFLUXDB_PORT:-8086}:8086"
-    environment:
-      DOCKER_INFLUXDB_INIT_MODE: setup
-      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USERNAME}
-      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD}
-      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG}
-      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET}
-      DOCKER_INFLUXDB_INIT_RETENTION: ${INFLUXDB_RETENTION:-730d}
-      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN}
-    volumes:
-      - influxdb_data:/var/lib/influxdb2
-      - influxdb_config:/etc/influxdb2
-    healthcheck:
-      test: ["CMD", "influx", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  grafana:
-    image: grafana/grafana:11.2.0
-    restart: unless-stopped
-    ports:
-      - "${GRAFANA_PORT:-3000}:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-      INFLUXDB_ORG: ${INFLUXDB_ORG}
-      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
-      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-    depends_on:
-      influxdb:
-        condition: service_healthy
-
-  collector:
+  sensor:
+    image: ghcr.io/simonbolton/sensor/collector:latest
     build:
       context: ./collector
     restart: unless-stopped
-    network_mode: host
     privileged: true
+    network_mode: host
     environment:
-      MQTT_HOST: 127.0.0.1
-      MQTT_PORT: ${MQTT_PORT:-1883}
-      MQTT_USERNAME: ${MQTT_USERNAME}
-      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      SENSORS: ${SENSORS:-outdoor=AA:BB:CC:DD:EE:FF}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       MQTT_TOPIC_PREFIX: ${MQTT_TOPIC_PREFIX:-sensors/switchbot}
-      INFLUX_URL: http://127.0.0.1:${INFLUXDB_PORT:-8086}
-      INFLUX_ORG: ${INFLUXDB_ORG}
-      INFLUX_BUCKET: ${INFLUXDB_BUCKET}
-      INFLUX_TOKEN: ${INFLUXDB_TOKEN}
       SCAN_INTERVAL_SECONDS: ${SCAN_INTERVAL_SECONDS:-900}
       SCAN_TIMEOUT_SECONDS: ${SCAN_TIMEOUT_SECONDS:-60}
-      SENSORS_FILE: /config/sensors.yaml
+      RETENTION_DAYS: ${RETENTION_DAYS:-730}
+      WEB_PORT: ${WEB_PORT:-8080}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_MQTT: ${ENABLE_MQTT:-true}
+      SQLITE_PATH: /data/sensors.db
+      MQTT_HOST: 127.0.0.1
+      MQTT_PORT: 1883
     volumes:
-      - ./collector/sensors.yaml:/config/sensors.yaml:ro
+      - sensor_data:/data
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-      influxdb:
-        condition: service_healthy
 
 volumes:
-  mosquitto_data:
-  mosquitto_log:
-  influxdb_data:
-  influxdb_config:
-  grafana_data:
+  sensor_data:
