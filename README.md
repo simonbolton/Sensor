@@ -1,95 +1,84 @@
 # SwitchBot sensor box
 
-One Docker container for Dockge:
+Reads SwitchBot BLE thermometer/hygrometer ads, stores them in SQLite, and shows a simple web page.
 
-- BLE collector (SwitchBot IP65 meters)
-- Mosquitto MQTT broker
-- SQLite database (2-year retention by default)
-- Simple web page for live + recent history
+**Recommended on Ubuntu:** install directly on the server (no Docker). Bluetooth works reliably this way.
 
-**Security classification: Low** — local LAN use. Do not expose MQTT/web to the public internet without auth and TLS.
+## Native Ubuntu install (recommended)
 
-## Image
-
-```text
-ghcr.io/simonbolton/sensor/collector:latest
-```
-
-## Dockge / Compose (single service)
-
-```yaml
-services:
-  sensor:
-    image: ghcr.io/simonbolton/sensor/collector:latest
-    restart: unless-stopped
-    privileged: true
-    network_mode: host
-    security_opt:
-      - apparmor:unconfined
-    environment:
-      SENSORS: outdoor=AA:BB:CC:DD:EE:FF
-      # Optional MQTT auth:
-      # MQTT_USERNAME: sensor
-      # MQTT_PASSWORD: change-me
-      SCAN_INTERVAL_SECONDS: "900"
-      RETENTION_DAYS: "730"
-      WEB_PORT: "8080"
-      LOG_LEVEL: INFO
-    volumes:
-      - ./data:/data
-      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
-```
-
-Then open: `http://<host-ip>:8080`
-
-MQTT broker (same host): `mqtt://<host-ip>:1883`
-
-## Environment variables
-
-| Variable | Example | Required |
-| --- | --- | --- |
-| `SENSORS` | `outdoor=AA:BB:CC:DD:EE:FF,garage=11:22:33:44:55:66` | Yes |
-| `MQTT_USERNAME` | `sensor` | No (anonymous if empty) |
-| `MQTT_PASSWORD` | secret | No |
-| `MQTT_TOPIC_PREFIX` | `sensors/switchbot` | No |
-| `SCAN_INTERVAL_SECONDS` | `900` | No |
-| `SCAN_TIMEOUT_SECONDS` | `60` | No |
-| `RETENTION_DAYS` | `730` | No |
-| `WEB_PORT` | `8080` | No |
-| `LOG_LEVEL` | `INFO` | No |
-| `ENABLE_MQTT` | `true` | No |
-| `SQLITE_PATH` | `/data/sensors.db` | No |
-
-`SENSORS` format: `name=MAC,name2=MAC2`  
-MAC from SwitchBot app → **Settings → Device Info → BLE MAC**.
-
-## Host requirements
-
-Ubuntu host with Bluetooth:
+On the server:
 
 ```bash
 sudo apt update
-sudo apt install -y bluez bluetooth
-sudo systemctl enable --now bluetooth
+sudo apt install -y git
+git clone https://github.com/simonbolton/Sensor.git
+cd Sensor
+sudo ./deploy/install.sh
 ```
 
-`network_mode: host`, `privileged: true`, and `security_opt: apparmor:unconfined` are required so BLE/D-Bus works on Ubuntu (otherwise AppArmor returns `AccessDenied` on BlueZ).
-
-## Local build
+Edit your meter MAC:
 
 ```bash
-cp .env.example .env
-# edit SENSORS
-docker compose up -d --build
+sudo nano /etc/sensor.env
 ```
 
-## API
+Set:
 
-- `GET /` — dashboard
-- `GET /api/latest` — latest reading per sensor
-- `GET /api/history?hours=24` — history JSON
-- `GET /healthz` — health check
+```bash
+SENSORS=garage=F2:A9:C0:86:55:21
+WEB_PORT=8678
+```
 
-## CI
+Use the BLE MAC from the SwitchBot app (**Settings → Device Info → BLE MAC**), or from:
 
-Push/PR to `main` builds and publishes the image to GHCR.
+```bash
+sudo bluetoothctl scan on
+```
+
+Restart:
+
+```bash
+sudo systemctl restart sensor
+sudo journalctl -u sensor -f
+```
+
+Open:
+
+```text
+http://<server-ip>:8678
+```
+
+### Useful commands
+
+```bash
+sudo systemctl status sensor
+sudo journalctl -u sensor -f
+sudo systemctl restart sensor
+```
+
+### Update later
+
+```bash
+cd Sensor
+git pull
+sudo ./deploy/install.sh
+```
+
+## What you get
+
+| Piece | Detail |
+| --- | --- |
+| Web UI | `http://<server-ip>:8678` |
+| Database | SQLite at `/var/lib/sensor/sensors.db` |
+| Config | `/etc/sensor.env` |
+| Service | `sensor.service` (systemd) |
+
+No phone pairing is required on the server. The meter broadcasts BLE ads; the service only scans them.
+
+## Docker / Dockge (optional)
+
+Docker on Ubuntu often hits AppArmor/D-Bus issues with Bluetooth. Prefer the native install above.
+
+If you still want Docker, use host networking, privileged mode, D-Bus mount, and `security_opt: apparmor:unconfined`. See `docker-compose.yml`.
+
+Image: `ghcr.io/simonbolton/sensor/collector:latest`

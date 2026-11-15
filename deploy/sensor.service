@@ -1,0 +1,18 @@
+[Unit]
+Description=SwitchBot sensor collector (BLE → SQLite + web UI)
+After=network.target bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/sensor.env
+WorkingDirectory=/opt/sensor
+ExecStart=/opt/sensor/.venv/bin/python -u app.py
+Restart=always
+RestartSec=5
+# Ensure Bluetooth is up before scanning
+ExecStartPre=/bin/sleep 2
+
+[Install]
+WantedBy=multi-user.target
