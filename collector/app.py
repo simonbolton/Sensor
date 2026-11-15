@@ -246,31 +246,57 @@ class MqttPublisher:
         self._client.disconnect()
 
 
+def _normalize_mac(value: str) -> str:
+    return value.replace(":", "").replace("-", "").upper()
+
+
 async def scan_once(
     sensors: dict[str, SensorConfig],
     timeout_seconds: float,
 ) -> dict[str, SensorReading]:
     found: dict[str, SensorReading] = {}
     pending = set(sensors.keys())
+    sensors_by_norm = {_normalize_mac(mac): mac for mac in sensors}
+    decode_fail_logged: set[str] = set()
     loop = asyncio.get_running_loop()
     done_event = asyncio.Event()
 
     def detection_callback(device: BLEDevice, advertisement: AdvertisementData) -> None:
         mac = device.address.upper()
-        if mac not in pending or mac in found:
+        configured_mac = sensors_by_norm.get(_normalize_mac(mac))
+        if configured_mac is None:
             return
-        reading = decode_switchbot_advertisement(
-            advertisement.manufacturer_data,
-            advertisement.service_data,
-        )
+        if configured_mac in found:
+            return
+
+        manu = advertisement.manufacturer_data or {}
+        service = advertisement.service_data or {}
+        reading = decode_switchbot_advertisement(manu, service)
         if reading is None:
+            if configured_mac not in decode_fail_logged:
+                decode_fail_logged.add(configured_mac)
+                manu_hex = {
+                    f"0x{company:04x}": data.hex() for company, data in manu.items()
+                }
+                service_hex = {str(uuid): data.hex() for uuid, data in service.items()}
+                LOG.warning(
+                    "ble_seen_but_not_decoded mac=%s name=%s local_name=%r "
+                    "rssi=%s manufacturer_data=%s service_data=%s",
+                    configured_mac,
+                    sensors[configured_mac].name,
+                    advertisement.local_name,
+                    getattr(advertisement, "rssi", None),
+                    manu_hex,
+                    service_hex,
+                )
             return
-        found[mac] = reading
-        pending.discard(mac)
+
+        found[configured_mac] = reading
+        pending.discard(configured_mac)
         LOG.info(
             "ble_reading_decoded name=%s mac=%s temperature_c=%s humidity_pct=%s battery_pct=%s",
-            sensors[mac].name,
-            mac,
+            sensors[configured_mac].name,
+            configured_mac,
             reading.temperature_c,
             reading.humidity_pct,
             reading.battery_pct,
@@ -278,11 +304,12 @@ async def scan_once(
         if not pending:
             loop.call_soon_threadsafe(done_event.set)
 
-    scanner = BleakScanner(detection_callback=detection_callback)
+    scanner = BleakScanner(detection_callback=detection_callback, scanning_mode="active")
     LOG.info(
-        "ble_scan_start timeout_seconds=%s sensor_count=%s",
+        "ble_scan_start timeout_seconds=%s sensor_count=%s configured_macs=%s",
         timeout_seconds,
         len(sensors),
+        ",".join(sorted(sensors.keys())),
     )
     await scanner.start()
     try:
@@ -291,7 +318,9 @@ async def scan_once(
         except TimeoutError:
             missing = sorted(pending)
             LOG.warning(
-                "ble_scan_timeout missing_count=%s missing_macs=%s",
+                "ble_scan_timeout missing_count=%s missing_macs=%s "
+                "hint='Confirm MAC matches bluetoothctl exactly; "
+                "increase SCAN_TIMEOUT_SECONDS if ads are sparse'",
                 len(missing),
                 ",".join(missing) if missing else "",
             )
