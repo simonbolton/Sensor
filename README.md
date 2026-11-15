@@ -24,6 +24,8 @@ services:
     restart: unless-stopped
     privileged: true
     network_mode: host
+    security_opt:
+      - apparmor:unconfined
     environment:
       SENSORS: outdoor=AA:BB:CC:DD:EE:FF
       # Optional MQTT auth:
@@ -71,7 +73,7 @@ sudo apt install -y bluez bluetooth
 sudo systemctl enable --now bluetooth
 ```
 
-`network_mode: host` + `privileged: true` are required so BLE works.
+`network_mode: host`, `privileged: true`, and `security_opt: apparmor:unconfined` are required so BLE/D-Bus works on Ubuntu (otherwise AppArmor returns `AccessDenied` on BlueZ).
 
 ## Local build
 

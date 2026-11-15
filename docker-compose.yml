@@ -9,6 +9,9 @@ services:
     restart: unless-stopped
     privileged: true
     network_mode: host
+    # Ubuntu AppArmor blocks BlueZ D-Bus from containers without this.
+    security_opt:
+      - apparmor:unconfined
     environment:
       SENSORS: ${SENSORS:-outdoor=AA:BB:CC:DD:EE:FF}
       MQTT_USERNAME: ${MQTT_USERNAME:-}
