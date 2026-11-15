@@ -56,6 +56,27 @@ sudo journalctl -u sensor -f
 sudo systemctl restart sensor
 ```
 
+### If the web page has no readings
+
+Run the BLE diagnostic (uses your MAC from `/etc/sensor.env` or pass one):
+
+```bash
+cd Sensor
+sudo ./deploy/diagnose.sh
+# or:
+sudo ./deploy/diagnose.sh F2:A9:C0:86:55:21
+```
+
+It prints raw advertisements and whether decode succeeds. Paste that output if readings are still missing.
+
+Also check service logs:
+
+```bash
+sudo journalctl -u sensor -n 100 --no-pager
+```
+
+Look for `ble_reading_decoded`, `ble_scan_timeout`, or `ble_seen_but_not_decoded`.
+
 ### Update later
 
 ```bash

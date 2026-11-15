@@ -35,8 +35,32 @@ def test_decode_negative_temperature() -> None:
     assert reading.battery_pct is None
 
 
+def test_decode_with_company_id_included() -> None:
+    # Some stacks leave company ID bytes in the payload (14 bytes total).
+    payload = bytearray(14)
+    payload[0] = 0x69
+    payload[1] = 0x09
+    payload[10] = 0x02
+    payload[11] = 0x80 | 22
+    payload[12] = 55
+
+    reading = decode_switchbot_advertisement({0x0969: bytes(payload)}, {})
+    assert reading is not None
+    assert reading.temperature_c == 22.2
+    assert reading.humidity_pct == 55.0
+
+
 def test_decode_returns_none_without_payload() -> None:
     assert decode_switchbot_advertisement({}, {}) is None
+
+
+def test_decode_rejects_impossible_humidity() -> None:
+    manu = bytearray(12)
+    manu[8] = 0x02
+    manu[9] = 0x80 | 22
+    manu[10] = 0x7F  # 127 after mask — invalid humidity
+    reading = decode_switchbot_advertisement({0x0969: bytes(manu)}, {})
+    assert reading is None
 
 
 def test_dewpoint_reasonable() -> None:

@@ -25,7 +25,9 @@ echo "==> Installing app to ${INSTALL_DIR}"
 mkdir -p "${INSTALL_DIR}" "${DATA_DIR}"
 rm -rf "${INSTALL_DIR:?}/"*
 cp -a "${REPO_ROOT}/collector/." "${INSTALL_DIR}/"
-rm -rf "${INSTALL_DIR}/.venv" "${INSTALL_DIR}/tests" "${INSTALL_DIR}/.pytest_cache"
+rm -rf "${INSTALL_DIR}/.venv" "${INSTALL_DIR}/.pytest_cache"
+# Keep diagnose_ble.py; drop unit tests from the install tree.
+rm -rf "${INSTALL_DIR}/tests"
 find "${INSTALL_DIR}" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 
 echo "==> Creating Python virtualenv"
